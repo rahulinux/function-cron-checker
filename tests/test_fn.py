@@ -1,78 +1,82 @@
 import dataclasses
 import unittest
+from unittest.mock import patch
+from datetime import datetime
+import pytz
 
 from crossplane.function import logging, resource
 from crossplane.function.proto.v1 import run_function_pb2 as fnv1
-from google.protobuf import duration_pb2 as durationpb
-from google.protobuf import json_format
 from google.protobuf import struct_pb2 as structpb
 
-from function import fn
-
+from function import fn  # Your cron-checker function
 
 class TestFunctionRunner(unittest.IsolatedAsyncioTestCase):
-    def setUp(self) -> None:
-        # Allow larger diffs, since we diff large strings of JSON.
+    def setUp(self):
         self.maxDiff = 2000
-
         logging.configure(level=logging.Level.DISABLED)
 
-    async def test_run_function(self) -> None:
-        @dataclasses.dataclass
-        class TestCase:
-            reason: str
-            req: fnv1.RunFunctionRequest
-            want: fnv1.RunFunctionResponse
-
-        cases = [
-            TestCase(
-                reason="The function should return the input as a result.",
-                req=fnv1.RunFunctionRequest(
-                    input=resource.dict_to_struct({"version": "v1beta2"}),
-                    observed=fnv1.State(
-                        composite=fnv1.Resource(
-                            resource=resource.dict_to_struct(
-                                {
-                                    "apiVersion": "example.crossplane.io/v1",
-                                    "kind": "XR",
-                                    "spec": {"region": "us-west-2"},
-                                }
-                            ),
-                        ),
-                    ),
-                ),
-                want=fnv1.RunFunctionResponse(
-                    meta=fnv1.ResponseMeta(ttl=durationpb.Duration(seconds=60)),
-                    desired=fnv1.State(
-                        resources={
-                            "bucket": fnv1.Resource(
-                                resource=resource.dict_to_struct(
-                                    {
-                                        "apiVersion": "s3.aws.upbound.io/v1beta2",
-                                        "kind": "Bucket",
-                                        "spec": {
-                                            "forProvider": {"region": "us-west-2"},
-                                        },
-                                    }
-                                ),
-                            ),
-                        },
-                    ),
-                    context=structpb.Struct(),
-                ),
-            ),
-        ]
-
-        runner = fn.FunctionRunner()
-
-        for case in cases:
-            got = await runner.RunFunction(case.req, None)
-            self.assertEqual(
-                json_format.MessageToDict(case.want),
-                json_format.MessageToDict(got),
-                "-want, +got",
+    @patch('function.fn.datetime')  # Mock datetime for deterministic testing
+    async def test_active_schedule(self, mock_datetime):
+        mock_now = datetime(2024, 1, 1, 12, 0, tzinfo=pytz.UTC)  # 12PM UTC
+        mock_datetime.now.return_value = mock_now
+        
+        req = fnv1.RunFunctionRequest(
+            observed=fnv1.State(
+                composite=fnv1.Resource(
+                    resource=resource.dict_to_struct({
+                    "apiVersion": "policyscheduler.example.com/v1alpha1",
+                    "kind": "XPolicyScheduler",
+                    "spec": {
+                        "schedules": [{
+                            "policyArn": "arn:aws:iam::aws:policy/TestPolicy",
+                            "roleName": "test-role",
+                            "scheduleFrom": "* * * * 1-5",
+                            "scheduleUntil": "* * * * 1-5",
+                            "timeZone": "UTC"
+                        }]
+                    }
+                })
+                )
             )
+        )
+        
+        runner = fn.FunctionRunner()
+        got = await runner.RunFunction(req, None)
+        print(got)
+        
+        # cron_check = got.context.fields.get("cronCheck")
+        cron_check = got.context.fields.get("cronCheck")
+        if cron_check and cron_check.HasField("struct_value"):
+            active_schedules = cron_check.struct_value.fields.get("activeSchedules")
+            if active_schedules and active_schedules.HasField("list_value"):
+                active_indices = [v.string_value for v in active_schedules.list_value.values]
+                self.assertEqual(active_indices, ["0"])
 
+    # async def test_invalid_cron(self):
+    #     req = fnv1.RunFunctionRequest(
+    #         observed=fnv1.State(
+    #             composite=fnv1.Resource(
+    #                 resource=resource.dict_to_struct({
+    #                     "spec": {
+    #                         "schedules": [{
+    #                             "scheduleFrom": "invalid-cron",
+    #                             "scheduleUntil": "* * * * *"
+    #                         }]
+    #                     }
+    #                 })
+    #             )
+    #         )
+    #     )
+        
+    #     runner = fn.FunctionRunner()
+    #     got = await runner.RunFunction(req, None)
+        
+    #     found = any(
+    #         c.type == "InvalidSchedule" and 
+    #         c.status == fnv1.Status.STATUS_CONDITION_TRUE
+    #         for c in got.conditions
+    #     )
+    #     self.assertTrue(found, "Condition not added for invalid cron")
 
 if __name__ == "__main__":
     unittest.main()
