@@ -15,3 +15,41 @@ spec:
       apiVersion: template.fn.crossplane.io/v1beta1
       kind: Input
       version: v1beta2
+---
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: xpolicyscheduler.aws.example.com
+spec:
+  compositeTypeRef:
+    apiVersion: policyscheduler.example.com/v1alpha1
+    kind: XPolicyScheduler
+  mode: Pipeline
+  pipeline:
+    - step: cron-check
+      functionRef:
+        name: function-cron-checker
+    - step: render-resources
+      functionRef:
+        name: function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $active := index .context "cronCheck" "activeSchedules" -}}
+            {{- range $index, $schedule := .observed.composite.resource.spec.schedules -}}
+            {{- if has (toString $index) $active -}}
+            apiVersion: iam.aws.upbound.io/v1beta1
+            kind: Role
+            metadata:
+              name: {{ $schedule.roleName }}
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: {{ $schedule.roleName }}
+            spec:
+              forProvider:
+                name: {{ $schedule.roleName }}
+            {{- end -}}
+            {{- end -}}
+

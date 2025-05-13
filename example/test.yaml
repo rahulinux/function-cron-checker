@@ -1,0 +1,12 @@
+apiVersion: policyscheduler.example.com/v1alpha1
+kind: XPolicyScheduler
+metadata:
+  name: test-scheduler
+spec:
+  schedules:
+  - policyArn: arn:aws:iam::aws:policy/ReadOnlyAccess
+    roleName: read-only-role
+    scheduleFrom: "* * * * *"  # Mon-Fri 9AM
+    scheduleUntil: "* * * * *" # Mon-Fri 5PM
+    timeZone: "America/New_York"
+
